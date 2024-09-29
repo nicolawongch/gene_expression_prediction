@@ -981,12 +981,7 @@ def run_main(input, rna_data,modifications, target, expressed_only):
             end=None,
             as_pyranges=False,
         )
-
-    selected_transcripts = transcripts.groupby('gene_id').apply(
-        select_transcript_based_on_tag
-        ).reset_index(drop=True)
-    print(f"transcript downloaded, selected transcripts: {selected_transcripts}")
-   
+    
     # expression data
     if target == "TPM":
         zscore_threshold = 0.8
@@ -994,6 +989,11 @@ def run_main(input, rna_data,modifications, target, expressed_only):
         df_features_expression = load_rna_expression_tpm(rna_data, df_features, transcripts, expressed_only)
         print("TPM expression data loaded")
     elif target == "rpkm":
+        selected_transcripts = transcripts.groupby('gene_id').apply(
+            select_transcript_based_on_tag
+        ).reset_index(drop=True)
+        print(f"transcript downloaded, selected transcripts: {selected_transcripts}")
+   
         zscore_threshold = 1
         multimodal = False
         df_expression = load_rna_expression_rpm(rna_data, selected_transcripts, transcripts, target)
