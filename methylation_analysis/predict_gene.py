@@ -14,6 +14,7 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
     f1_score,
+    classification_report
 )
 from sklearn.impute import SimpleImputer
 from sklearn.cluster import KMeans
@@ -118,6 +119,8 @@ def load_rna_expression_tpm(rna_input, features, transcripts, expressed_only=Fal
     # df_expression['Gene_id'] = merged_df['parent']
     # df_expression['strand'] = merged_df['strand']
     # df_expression['contig'] = merged_df['contig']
+
+    # TODO- add this to write up: drop columns with only Nan values
     # df_features_expression = df_features_expression[~df_features_expression.isna().any(axis=1)]
     # df_features_expression = df_features_expression.dropna(axis=1, how='all')
 
@@ -816,10 +819,10 @@ def tune_classifier_with_weights(X, y, param_grid, classifier, scoring, n_splits
     print(f"skf defined with {n_splits} splits.")
 
     # GridSearchCV with custom fit parameters for each fold
-    search = GridSearchCV(classifier, param_grid, cv=skf, scoring=scoring, n_jobs=4, refit=True)
+    search = GridSearchCV(classifier, param_grid, cv=skf, scoring=scoring, n_jobs=-1, refit=True)
 
     # Iterate through the StratifiedKFold splits
-    for train_idx, val_idx in skf.split(X, y):
+    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y)):
         print(type(y))
         y_train_fold = y.iloc[train_idx].values
         
@@ -828,6 +831,19 @@ def tune_classifier_with_weights(X, y, param_grid, classifier, scoring, n_splits
         
         # Fit the model using the training data and the calculated sample weights
         search.fit(X.iloc[train_idx], y.iloc[train_idx], sample_weight=sample_weight)
+        
+        # Get best parameters for this fold
+        best_params = search.best_params_
+        logging.info(f"Best parameters for fold {fold_idx}: {best_params}")
+        print(f"Best parameters for fold {fold_idx}: {best_params}")
+
+        # Evaluate the model on the validation set using the best parameters
+        y_pred = search.predict(X.iloc[val_idx])
+
+        # Calculate and log metrics
+        report = classification_report(y.iloc[val_idx], y_pred, output_dict=True)
+        logging.info(f"Metrics for fold {fold_idx}: {report}")
+        print(f"Metrics for fold {fold_idx}: {report}")
 
     # Returning best parameters from the grid search
     return search.best_params_
@@ -892,10 +908,10 @@ def plot_results(y_test, y_pred, title, target):
 
 ######## FEATURE IMP ########
 
-def evaluate_feat_imp(best_model, features):
+def evaluate_feat_imp(best_model, features, modifications):
     df_features_importance = pd.DataFrame(
         {
-            "feature": select_features(features, ["mc", "hmc"]),
+            "feature": select_features(features, modifications),
             "importance": best_model.feature_importances_,
         }
     
@@ -1045,13 +1061,30 @@ def run_main(input, rna_data,modifications, target, expressed_only):
     print(f"Training with {len(features)} features...")
 
     default_hyperparameters = {
-        'n_estimators': 600, 
-        'colsample_bytree': 0.8, 
-        'eta': 0.01, 
-        'max_depth': 5, 
-        'min_child_weight': 10, 
-        'subsample': 0.8
-    }
+        "mh":{
+            'n_estimators': 600, 
+            'colsample_bytree': 0.8, 
+            'eta': 0.01, 
+            'max_depth': 5, 
+            'min_child_weight': 10, 
+            'subsample': 0.8
+        },
+        "mod":{
+            'n_estimators': 600,
+            'colsample_bytree': 0.75, 
+            'eta': 0.02, 
+            'max_depth': 7, 
+            'min_child_weight': 10, 
+            'subsample': 0.7
+            },
+        "m":{
+            'n_estimators': 600,
+            'colsample_bytree': 0.75, 
+            'eta': 0.02, 
+            'max_depth': 7, 
+            'min_child_weight': 10, 
+            'subsample': 0.7}
+        }
 
     # Building a regressor:
 
@@ -1081,17 +1114,27 @@ def run_main(input, rna_data,modifications, target, expressed_only):
         print("grid serching (Regression)")
     else:
         param_grid = None
-        print(f"training with {default_hyperparameters}")
+        mod = ''
+        if "modc" in modifications:
+            mod = "mod"
+        elif "mc" in modifications and "hmc" in modifications:
+            mod = "mh"
+        elif "mc" in modifications and "hmc" not in modifications:
+            mod = "m"
+        print(f"training with {default_hyperparameters[mod]}")
 
-    build_regression_model(X_train, X_test, y_train, y_test, target, default_hyperparameters, regression_gridsearch, param_grid) #skip gridsearch for now
+    build_regression_model(X_train, X_test, y_train, y_test, target, default_hyperparameters[mod], regression_gridsearch, param_grid) #skip gridsearch for now
     
     
     print('='*200)
 
     # Build a classifier:
-    classifier_gridsearch = True
+    classifier_gridsearch = False
     
-    number_of_categories = np.arange(2, 5, 1)
+    if classifier_gridsearch:
+        number_of_categories = [2]
+    else:
+        number_of_categories = np.arange(2, 5, 1)
     classifiers = {}
     classifier_res = pd.DataFrame(columns=["number_of_categories", "accuracy", "macro_f1", "auc"])
 
@@ -1111,19 +1154,26 @@ def run_main(input, rna_data,modifications, target, expressed_only):
         
         if classifier_gridsearch:
             param_grid = {
-            "max_depth": [5, 6, 7],
-            "n_estimators": [300, 400, 500, 600, 700, 800],
+            "max_depth": [6, 7, 8],
+            "n_estimators": [500, 600, 700],
             "subsample": [0.6, 0.7, 0.8],
             "min_child_weight": [1, 5, 10],
-            "colsample_bytree": [0.75, 0.8, 0.85, 0.9],
-            "eta": [0.01, 0.02, 0.03, 0.04, 0.05],
+            "colsample_bytree": [0.7, 0.75, 0.8],
+            "eta": [0.01, 0.02, 0.03],
             }
             print(f"training {n} category model with grid serching (classification)")
         else:
             param_grid = None
-            print(f"training {n} category model with {default_hyperparameters}")
+            mod = ''
+            if "modc" in modifications:
+                mod = "mod"
+            elif "mc" in modifications and "hmc" in modifications:
+                mod = "mh"
+            elif "mc" in modifications and "hmc" not in modifications:
+                mod = "m"
+            print(f"training {n} category model with {default_hyperparameters[mod]}")
         
-        classifier, df_metrics = build_classification_model(X_train, X_test, y_train, y_test, default_hyperparameters, n, classifier_gridsearch, param_grid)
+        classifier, df_metrics = build_classification_model(X_train, X_test, y_train, y_test, default_hyperparameters[mod], n, classifier_gridsearch, param_grid)
         
         # Store the classifiers and metric for later use
         classifiers[n] = classifier
@@ -1142,7 +1192,7 @@ def run_main(input, rna_data,modifications, target, expressed_only):
 
 
     # Feature Importance:
-    evaluate_feat_imp(best_model, features)
+    evaluate_feat_imp(best_model, features, modifications)
 
 
 
