@@ -14,7 +14,10 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
     f1_score,
-    classification_report
+    classification_report,
+    make_scorer,
+    roc_curve,
+    auc
 )
 from sklearn.impute import SimpleImputer
 from sklearn.cluster import KMeans
@@ -29,8 +32,11 @@ from modality.annotation import get_transcripts
 
 
 # setup
-logging.disable(logging.CRITICAL)
+# logging.disable(logging.CRITICAL)
 warnings.filterwarnings("ignore")
+# Configure the logger
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')#- %(levelname)s
+logger = logging.getLogger(__name__)
 
 sns.set_theme()
 sns.set_style("whitegrid")
@@ -124,13 +130,13 @@ def load_rna_expression_tpm(rna_input, features, transcripts, expressed_only=Fal
     # df_features_expression = df_features_expression[~df_features_expression.isna().any(axis=1)]
     # df_features_expression = df_features_expression.dropna(axis=1, how='all')
 
-    print('target loaded, shape:')
-    print(df_features_expression.shape)
+    logger.info('target loaded, shape:')
+    logger.info(df_features_expression.shape)
 
     if expressed_only:
         df_features_expression = df_features_expression[df_features_expression["TPM"]>0]
-        print('target filtered, TPM>0, shape:')
-        print(df_features_expression.shape)
+        logger.info('target filtered, TPM>0, shape:')
+        logger.info(df_features_expression.shape)
 
     return df_features_expression
 
@@ -172,8 +178,8 @@ def load_rna_expression_rpm(rna_data_path, selected_transcripts, transcripts, ta
     df_expression["Start"] = df_expression["Start"] - 1
     df_expression["End"] = df_expression["End"] - 1
 
-    print("rpkm dataset shape:")
-    print(df_expression.shape)
+    logger.info("rpkm dataset shape:")
+    logger.info(df_expression.shape)
     # df_expression = pd.merge(full_selected_transcript, df_expression, left_on='gene_name', right_on='Gene', how='inner')
     
 
@@ -187,7 +193,7 @@ def load_rna_expression_rpm(rna_data_path, selected_transcripts, transcripts, ta
 ######## EXPLORATORY DATA ANALYSIS ########
 def plot_target(df, target):
     plt.figure(figsize=(10, 6))
-    plt.scatter(df.index, df[target], color='blue', alpha=0.6)
+    plt.scatter(df.index, df[target], color=biomodal_palette[1], alpha=0.6, s=10)
     plt.xlabel('Index')
     plt.ylabel('Label')
     plt.title('Scatter Plot of Label Across Index')
@@ -197,8 +203,9 @@ def plot_target(df, target):
 
 def plot_target_kde(df,target):
     min_expressed=df[df[target]!=0][target].min()
-    print(f"minimum non-zero value: {min_expressed}, using {min_expressed/100} as a constant for log transform [plotting only]")
+    logger.info(f"minimum non-zero value: {min_expressed}, using {min_expressed/100} as a constant for log transform [plotting only]")
     sns.kdeplot(np.log2(df[target]+min_expressed/100))
+    plt.xlabel(f"Expression Values (log2(TPM+{min_expressed/100})")
     plt.show()
     # sns.kdeplot(df[target])
     
@@ -208,7 +215,7 @@ def plot_numeric_features_histogram_grid(df, target, num_cols=4):
     # features = [col for col in df.columns if df[col].dtype != 'object']
     features = [col for col in df.columns if col != target and col != "strand"]
     num_features = len(features)
-    print(f"number of features: {num_features}")
+    logger.info(f"number of features: {num_features}")
 
     
     # Calculate number of rows needed for the grid
@@ -258,8 +265,8 @@ def print_high_corr(features_df):
     high_corr_pairs_sorted = high_corr_pairs.sort_values(ascending=False)
 
     # Display the unique pairs with correlation higher than 0.5
-    print(high_corr_pairs_sorted)
-    print(f"{len(high_corr_pairs)} / {len(corr_pairs)}")
+    logger.info(high_corr_pairs_sorted)
+    logger.info(f"{len(high_corr_pairs)} / {len(corr_pairs)}")
 
 
 
@@ -275,9 +282,9 @@ def remove_target_outliers(df, target, threshold):
     # Calculate Z-scores
     z_scores = np.abs(zscore(df[target]))
     # Filter out outliers
-    print(f"number of entries removed: {df[(z_scores >= threshold)].shape[0]} (out of {df.shape[0]})")
+    logger.info(f"number of entries removed: {df[(z_scores >= threshold)].shape[0]} (out of {df.shape[0]})")
     df_clean = df[(z_scores < threshold)]
-    plot_target(df_clean, target)
+    # plot_target(df_clean, target)
     return df_clean
 
 def remove_obvious_outliers(df):
@@ -288,7 +295,7 @@ def remove_obvious_outliers(df):
     suspicious_hmc_rows = df[(df[hmc_cols] == 1.0).any(axis=1)]
     # Combine the two groups to find all suspicious rows
     suspicious_rows = pd.concat([suspicious_mc_rows, suspicious_hmc_rows]).index.unique()
-    print(f"rows with 1.0 mc / hmC mean meth fration: {len(suspicious_rows)}")
+    logger.info(f"rows with 1.0 mc / hmC mean meth fration: {len(suspicious_rows)}")
 
     # Drop the suspicious rows from the original DataFrame
     df_clean = df.drop(suspicious_rows)
@@ -296,7 +303,7 @@ def remove_obvious_outliers(df):
 
 
 def impute_multimodal(data_train, data_test, columns_to_impute, missing_values_strategy="mean"):
-    print(f"inside impute -- train: {data_train.shape}, test: {data_test.shape}")
+    logger.info(f"inside impute -- train: {data_train.shape}, test: {data_test.shape}")
 
     # Iterate through each column that needs imputation
     for column in columns_to_impute:
@@ -305,7 +312,7 @@ def impute_multimodal(data_train, data_test, columns_to_impute, missing_values_s
         non_missing_train = data_train[column].dropna().values.reshape(-1, 1)
         
         if non_missing_train.size == 0:
-            print(f"No non-missing values in column {column}.")
+            logger.info(f"No non-missing values in column {column}.")
             continue  # Skip if no non-missing values
 
         # Apply KMeans clustering on the non-missing values
@@ -321,7 +328,7 @@ def impute_multimodal(data_train, data_test, columns_to_impute, missing_values_s
             cluster_train_data = data_train[data_train['cluster'] == cluster]
 
             if cluster_train_data[column].isna().all():
-                print(f"Cluster {cluster} in training set has all NaNs for column {column}.")
+                logger.warning(f"Cluster {cluster} in training set has all NaNs for column {column}.")
                 continue
             
             # Impute missing values for the current cluster
@@ -336,7 +343,7 @@ def impute_multimodal(data_train, data_test, columns_to_impute, missing_values_s
             cluster_test_data = data_test[data_test['cluster'] == cluster]
 
             if cluster_test_data[column].isna().all():
-                print(f"Cluster {cluster} in testing set has all NaNs for column {column}.")
+                logger.warning(f"Cluster {cluster} in testing set has all NaNs for column {column}.")
                 continue
             
             # Use the same imputer fitted on the train cluster to impute test set
@@ -380,18 +387,18 @@ def select_features(features, mod):
     """
     if isinstance(mod, str):
         mod = [mod]
-    return [f for f in features if any([m in f for m in mod]) or (("cpg_count" in f) or ("range" in f) or ("strand" in f))]
+    return [f for f in features if any([ f"_{m}" in f for m in mod]) or (("cpg_count" in f) or ("range" in f) or ("strand" in f))]
 
 def split_train_test_data(data, features, target, missing_values_strategy="mean", use_SMOTE=False):
     """
     Split the data into training and testing sets using the specified test contig,
     impute missing values, and apply SMOTE if necessary.
     """
-    print("Inside train-test split function")
+    logger.debug("Inside train-test split function")
 
     # Features to be used for imputation (excluding certain features like strand)
     impute_features = [f for f in features if not f.startswith("strand")]
-    print(f"Features to impute: {len(impute_features)}, {impute_features}")
+    logger.info(f"Features to impute: {len(impute_features)}, {impute_features}")
     
     # Initializing lists to store the indices and data for train and test
     all_train_indices = []
@@ -405,7 +412,7 @@ def split_train_test_data(data, features, target, missing_values_strategy="mean"
     
     # Group data by contig (Chromosome)
     grouped = data.groupby('Chromosome')
-    print(f"unique chromosome: {grouped.groups.keys()}")
+    logger.info(f"unique chromosome: {grouped.groups.keys()}")
     
     for contig, group in grouped:
         # 1. Split the data into train and test
@@ -426,7 +433,7 @@ def split_train_test_data(data, features, target, missing_values_strategy="mean"
             X_train = X_train.loc[y_train.index]
             # Check if there's more than one class in the target
             if y_train.nunique() > 1:
-                print(f"Contig {contig} - Before SMOTE: {X_train.shape}, {y_train.shape}")
+                logger.info(f"Contig {contig} - Before SMOTE: {X_train.shape}, {y_train.shape}")
 
                 # Apply SMOTE to the training data
                 smote = SMOTE(random_state=42)
@@ -439,7 +446,7 @@ def split_train_test_data(data, features, target, missing_values_strategy="mean"
                 X_train_final = pd.concat([X_train_final, X_train_resampled])
                 y_train_final = pd.concat([y_train_final, y_train_resampled])
             else:
-                print(f"Contig {contig} has only one class. Skipping SMOTE.")
+                logger.warning(f"Contig {contig} has only one class. Skipping SMOTE.")
                 # Directly append the original train data
                 X_train_final = pd.concat([X_train_final, X_train])
                 y_train_final = pd.concat([y_train_final, y_train])
@@ -465,12 +472,12 @@ def split_train_test_data(data, features, target, missing_values_strategy="mean"
 
     # Distribution of contigs in the train set (using indices)
     train_contig_distribution = data.loc[X_test_final.index, 'Chromosome'].value_counts() / data['Chromosome'].value_counts()
-    print(train_contig_distribution)
-    print('-'*50)
+    logger.debug(train_contig_distribution)
+    logger.debug('-'*50)
     ### debug print out
 
-    print(f"Final train set: {X_train_final.shape}, {y_train_final.shape}")
-    print(f"Final test set: {X_test_final.shape}, {y_test_final.shape}")
+    logger.info(f"Final train set: {X_train_final.shape}, {y_train_final.shape}")
+    logger.info(f"Final test set: {X_test_final.shape}, {y_test_final.shape}")
 
     return X_train_final, X_test_final, y_train_final, y_test_final
 
@@ -495,8 +502,8 @@ def stratified_sampling_per_contig(df,test_size=0.1,):
     # Exclude these indices to form the test set
     test_set = df.drop(train_indices)
 
-    print(f"train set: {train_set.shape}")
-    print(f"test set: {test_set.shape}")
+    logger.info(f"train set: {train_set.shape}")
+    logger.info(f"test set: {test_set.shape}")
     return train_set, test_set
 
 
@@ -505,22 +512,22 @@ def split_train_test_data_simple(data, features, target, multimodal=True):
     """
     Split the data into training and testing sets using the specified test contig
     """
-    print("inside train test split")
+    logger.debug("inside train test split")
 
     # Assuming 'features' is your list of feature names
     impute_features = [f for f in features if not f.startswith("strand")]
-    print(f"features to impute:{len(impute_features)}, {impute_features}")
+    logger.info(f"features to impute:{len(impute_features)}, {impute_features}")
 
     data_train , data_test = stratified_sampling_per_contig(data)
 
     # Check the distribution of TPM in the test set
-    print(data_test[target].value_counts()/len(data))
-    print('-'*50)
+    logger.info(data_test[target].value_counts()/len(data))
+    logger.info('-'*50)
     # Check the distribution of contigs in the test set
-    print(data_test['Chromosome'].value_counts()/data['Chromosome'].value_counts())
-    print('-'*50)
+    logger.info(data_test['Chromosome'].value_counts()/data['Chromosome'].value_counts())
+    logger.info('-'*50)
 
-    print("before imputing")
+    logger.debug("before imputing")
     if multimodal:
         data_train, data_test = impute_multimodal(
             data_train,
@@ -548,7 +555,7 @@ def scale_counts(df,method="StandardScaler"):
     elif method == "MinMaxScaler":
         scaler = MinMaxScaler()
     else:
-        print("not scaled!!!")
+        logger.warning("not scaled!!!")
         exit=1
     # Apply the scaler on the selected columns
     df[columns_to_scale] = scaler.fit_transform(df[columns_to_scale])
@@ -564,11 +571,9 @@ def log_transform(data):
     elif type(data) == pd.Series:
         # transformed= np.log2(data+0.001)
         min_expressed=data[data!=0].min()
-        print(f"minimum non-zero value: {min_expressed}, using {min_expressed/100} as a constant for log transform [plotting only]")
+        logger.info(f"minimum non-zero value: {min_expressed}, using {min_expressed/100} as a constant for log transform [plotting only]")
     
-        print("y ranges from:")
-        print(data.min())
-        print(data.max())
+        logger.info(f"y ranges from: {data.min()} - {data.max()} ")
         transformed= np.log2(data+min_expressed/100)
 
     return transformed
@@ -580,41 +585,23 @@ def preprocess(data,
   mod,
   target, 
   missing_values_strategy="mean", 
-  multimodal=True,
   classifier=False,
   n_cat =0
 ):
 
   features = select_features(features, mod)
-  print(features)
+  logger.info(features)
 
 
   data_cleaned = remove_obvious_outliers(data)
-#   print(data_cleaned.head())
+  logger.debug(data_cleaned.head())
 
   # drop contig
   # Drop rows where 'Chromosome' is in the list ['X', 'Y']
   data_cleaned = data_cleaned[~data_cleaned['Chromosome'].isin(['X', 'Y'])]
   data_cleaned['Chromosome'] = data_cleaned['Chromosome'].cat.remove_unused_categories()
 
-  print(f"removed chromosome X, Y: {data_cleaned['Chromosome'].unique()}")
-
-#   if classifier:
-#     labels = [k for k in range(n_cat)]
-#     print(labels)
-#     data_cleaned[target], binedges = pd.cut(
-#         data_cleaned[target], bins=n_cat, labels=labels, retbins=True
-#     )
-#     print(f"bins: {binedges}")
-
-#   X_train, X_test, y_train, y_test = split_train_test_data(
-#         data_cleaned, 
-#         features, 
-#         target, 
-#         missing_values_strategy,
-#         use_SMOTE=False
-#         )
-
+  logger.info(f"removed chromosome X, Y: {data_cleaned['Chromosome'].unique()}")
   X_train, X_test, y_train, y_test = split_train_test_data_simple(
         data_cleaned, 
         features, 
@@ -622,9 +609,9 @@ def preprocess(data,
         )
 
 
-  print("Shape of train data")
+  logger.info("Shape of train data")
   X_train = scale_counts(X_train,"StandardScaler")
-  print("Shape of test data")
+  logger.info("Shape of test data")
   X_test = scale_counts(X_test, "StandardScaler")
   # X_train = log_transform(X_train)
   # X_test = log_transform(X_test)
@@ -632,22 +619,23 @@ def preprocess(data,
   
   y_train = log_transform(y_train)
   y_test = log_transform(y_test)
+
+  # binning values for classifier as the last step of preprocessing
   if classifier and n_cat>0:
     labels = [k for k in range(n_cat)]
-    print(labels)
+    logger.info(labels)
     y_train, train_binedges = pd.cut(
         y_train, bins=n_cat, labels=labels, retbins=True
     )
     y_test, binedges = pd.cut(
         y_test, bins=n_cat, labels=labels, retbins=True
     )
-    print(f"bins: {train_binedges}")
+    logger.info(f"bins: {train_binedges}")
 
-  print(X_train.shape)
-  print(X_test.shape)
-  print(f"After train test split:")
-  print(f"train target null count: {y_train.isna().sum()}")
-  print(f"test target null count: {y_test.isna().sum()}")
+  logger.info(f"After train test split:")
+  logger.info(f"train input:{X_train.shape}, test input: {X_test.shape}")
+  logger.info(f"train target null count: {y_train.isna().sum()}")
+  logger.info(f"test target null count: {y_test.isna().sum()}")
 
 
   return X_train, X_test, y_train, y_test
@@ -689,8 +677,7 @@ def run_regressor(
                 best_params = tune_parameters(X_train, y_train, param_grid, model, scoring)
                 hyperparameters.update(best_params)
 
-    print("Using params")
-    print(hyperparameters)
+    logger.info(f"Using params: {hyperparameters}")
     
 
     model = train_regression_model(X_train, y_train, hyperparameters, random_state)
@@ -732,33 +719,37 @@ def run_classifier(
     """
     Run an xgboost classifier
     """
-    print("in run_classifier:")
-    print(y_train.value_counts())
-    print(f"{y_train.isna().sum()/len(y_train)} is null")  # Count the number of NaN values
+    logger.debug("in run_classifier:")
+    logger.info(y_train.value_counts())
+    logger.info(f"{y_train.isna().sum()/len(y_train)} is null")  # Count the number of NaN values
 
     # classifier = xgb.XGBClassifier(eval_metric=scoring)
     if len(y_test.unique())>2:
-
-        print(f"multiclass: {len(y_test.unique())}")
+        logger.info(f"multiclass classification: {len(y_test.unique())} categories")
         # scoring = "roc_auc_ovo"
-        scoring = "f1_macro"
+        refit = "f1_macro"
         classifier = xgb.XGBClassifier(eval_metric="logloss", objective="multi:softmax")
     else:
-        scoring = "roc_auc"
-        print(f"binary:  {len(y_test.unique())}")
+        refit = "f1_macro"
+        logger.info(f"binary classification:  {len(y_test.unique())} categories")
         classifier = xgb.XGBClassifier(eval_metric="logloss")
-
+    
+    gs_metrics_df=None
     if find_optimal_parameters and param_grid is not None:
-        print("grid searching...")
-        best_params = tune_classifier_with_weights(X_train, y_train, param_grid, classifier, scoring )
+        logger.info(f"grid searching... with {param_grid}")
+        best_params, gs_metrics_df = tune_classifier_with_weights(X_train, y_train, param_grid, classifier, refit, n_splits=5)
+        print(f"original hyperparams {hyperparameters}, bestparams {best_params}")
         hyperparameters.update(best_params)
 
-    print("Using params")
-    print(hyperparameters)
+        plot_cv_tuning(gs_metrics_df)
+        plot_hyperparams(gs_metrics_df, param_grid)
+
+    logger.info(f"Using params: {hyperparameters}")
 
     classifier = train_classifier_model(X_train, y_train, hyperparameters, random_state)
 
     accuracy, f1, auc = evaluate_classifier(classifier, X_test, y_test)
+
 
     df_metrics = pd.DataFrame(
         {
@@ -769,7 +760,7 @@ def run_classifier(
 
         }
     )
-    return classifier, df_metrics
+    return classifier, df_metrics, gs_metrics_df
 
 
 # classifier
@@ -782,9 +773,7 @@ def train_classifier_model(X_train, y_train, hyperparameters, random_state=1):
         **hyperparameters,
     )
 
-
-    print("Using params")
-    print(hyperparameters)
+    logger.info(f"Using params: {hyperparameters}")
 
     sample_weight = calculate_class_weight(y_train, n_categories=len(np.unique(y_train)))
     classifier.fit(X_train, y_train, sample_weight=sample_weight)
@@ -800,53 +789,222 @@ def calculate_class_weight(y, n_categories):
     class_counts = np.bincount(y, minlength=n_categories)
     total_samples = len(y)
     # Calculate the class weights
-    print("calculating class weights")
+    logger.info("calculating class weights")
     for class_label in range(n_categories):
         weight = total_samples / (n_categories * class_counts[class_label]) if class_counts[class_label] > 0 else 0
-        # class_weights[class_label] = weight
-        print(f"{class_label}: {weight}")
+        logger.info(f"{class_label}: {weight}")
         sample_weight[y == class_label] = weight
 
     return sample_weight
 
-def tune_classifier_with_weights(X, y, param_grid, classifier, scoring, n_splits=5, random_state=42):
+# def tune_classifier_with_weights(X, y, param_grid, classifier, scoring, n_splits=5, random_state=42):
+#     """
+#     Tune XGBClassifier with class balancing and random StratifiedKFold
+#     """
+    
+#     # StratifiedKFold ensures that each fold is randomized and maintains class proportions
+#     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+#     print(f"skf defined with {n_splits} splits.")
+
+#     # GridSearchCV with custom fit parameters for each fold
+#     search = GridSearchCV(classifier, param_grid, cv=skf, scoring=scoring, n_jobs=-1, refit=True)
+
+#     # Iterate through the StratifiedKFold splits
+#     for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+#         y_train_fold = y.iloc[train_idx].values
+        
+#         # Calculate class weights for the current fold
+#         sample_weight = calculate_class_weight(y_train_fold, n_categories=len(np.unique(y)))
+        
+#         # Fit the model using the training data and the calculated sample weights
+#         search.fit(X.iloc[train_idx], y.iloc[train_idx], sample_weight=sample_weight)
+        
+#         # Get best parameters for this fold
+#         best_params = search.best_params_
+#         logging.info(f"Best parameters for fold {fold_idx}: {best_params}")
+#         print(f"Best parameters for fold {fold_idx}: {best_params}")
+
+#         # Evaluate the model on the validation set using the best parameters
+#         y_pred = search.predict(X.iloc[val_idx])
+
+#         # Calculate and log metrics
+#         report = classification_report(y.iloc[val_idx], y_pred, output_dict=True)
+#         logging.info(f"Metrics for fold {fold_idx}: {report}")
+#         print(f"Metrics for fold {fold_idx}: {report}")
+
+#     # Returning best parameters from the grid search
+#     return search.best_params_
+
+def tune_classifier_with_weights(X_train, y_train, param_grid, classifier, refit, n_splits=5, random_state=42):
     """
-    Tune XGBClassifier with class balancing and random StratifiedKFold
+    Perform grid search with StratifiedKFold and sample weights for class balancing.
+    Collect metrics for weighted accuracy, F1, and AUC for each hyperparameter tuning folds and return them in a DataFrame.
+
+    Parameters:
+    - X_train: Training features
+    - y_train: Training labels
+    - param_grid: Hyperparameter grid for tuning
+    - classifier: Classifier to be tuned
+    - refit: Metric to refit the best estimator
+    - n_splits: Number of splits for cross-validation
+    - random_state: Seed for random number generation
+
+    Returns:
+    - best_params_df: DataFrame of best parameters from each fold
+    - metrics_df: DataFrame of metrics for each hyperparameter set
     """
     
-    # StratifiedKFold ensures that each fold is randomized and maintains class proportions
+    logger.info("Starting grid search...")
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    print(f"skf defined with {n_splits} splits.")
+    logger.info(f"Using StratifiedKFold with {n_splits} splits.")
 
-    # GridSearchCV with custom fit parameters for each fold
-    search = GridSearchCV(classifier, param_grid, cv=skf, scoring=scoring, n_jobs=-1, refit=True)
+    # Initialize lists to store metrics and best parameters for all hyperparameter trials
+    all_metrics = []
+    best_params_list = []
+    
+    # Prepare the scoring metrics to cache
+    scoring_metrics = {
+        'f1_macro': 'f1_macro',
+        'auc': 'roc_auc',
+        'weighted_accuracy': make_scorer(accuracy_score)
+    }
+
+    # Perform GridSearchCV
+    search = GridSearchCV(classifier, param_grid, cv=skf, scoring=scoring_metrics, n_jobs=-1, refit=refit)
 
     # Iterate through the StratifiedKFold splits
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y)):
-        print(type(y))
-        y_train_fold = y.iloc[train_idx].values
+    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X_train, y_train)):
+        y_train_fold = y_train.iloc[train_idx].values
         
         # Calculate class weights for the current fold
-        sample_weight = calculate_class_weight(y_train_fold, n_categories=len(np.unique(y)))
+        sample_weight = calculate_class_weight(y_train_fold, n_categories=len(np.unique(y_train)))
         
         # Fit the model using the training data and the calculated sample weights
-        search.fit(X.iloc[train_idx], y.iloc[train_idx], sample_weight=sample_weight)
-        
+        search.fit(X_train.iloc[train_idx], y_train.iloc[train_idx], sample_weight=sample_weight)
+
         # Get best parameters for this fold
         best_params = search.best_params_
+        best_params_list.append(best_params)  # Store best params for this fold
         logging.info(f"Best parameters for fold {fold_idx}: {best_params}")
         print(f"Best parameters for fold {fold_idx}: {best_params}")
 
         # Evaluate the model on the validation set using the best parameters
-        y_pred = search.predict(X.iloc[val_idx])
+        y_pred = search.predict(X_train.iloc[val_idx])
 
         # Calculate and log metrics
-        report = classification_report(y.iloc[val_idx], y_pred, output_dict=True)
+        report = classification_report(y_train.iloc[val_idx], y_pred, output_dict=True)
         logging.info(f"Metrics for fold {fold_idx}: {report}")
         print(f"Metrics for fold {fold_idx}: {report}")
 
-    # Returning best parameters from the grid search
-    return search.best_params_
+        for idx in range(len(search.cv_results_['params'])):
+            # Access each set of parameters and their corresponding metrics
+            params = search.cv_results_['params'][idx]
+            mean_f1_macro = search.cv_results_['mean_test_f1_macro'][idx]
+            mean_auc = search.cv_results_['mean_test_auc'][idx]
+            mean_weighted_accuracy = search.cv_results_['mean_test_weighted_accuracy'][idx]
+
+            all_metrics.append({
+                'fold': fold_idx,
+                'hyperparams': params,
+                'mean_f1_macro': mean_f1_macro,
+                'mean_auc': mean_auc,
+                'mean_weighted_accuracy': mean_weighted_accuracy,
+            })
+
+    # Create a DataFrame to store all metrics for each hyperparameter set
+    metrics_df = pd.DataFrame(all_metrics)
+
+    logger.info("Grid search completed.")
+
+    logger.info(f"all_metrics:{all_metrics}")
+
+    # Get the best hyperparameters based on your preferred metric
+    best_metric = 'mean_f1_macro'  # Change to your desired metric
+    best_index = metrics_df[best_metric].idxmax()  # Get index of the best score
+    best_hyperparams = metrics_df.loc[best_index, 'hyperparams']
+
+    logger.info("Best hyperparams:{best_hyperparams}")
+    
+    # Return the best hyperparameters and the metrics DataFrame
+    return best_hyperparams, metrics_df
+
+
+
+
+# def tune_classifier_with_weights(X_train, y_train, param_grid, classifier, scoring, n_splits=5, random_state=42):
+#     """
+#     Perform grid search with StratifiedKFold and sample weights for class balancing.
+#     Collect metrics for F1 and AUC for each fold and summarize them.
+#     """
+
+#     logger.info("Starting grid search...")
+#     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+#     logger.info(f"Using StratifiedKFold with {n_splits} splits.")
+
+#     # GridSearchCV for tuning hyperparameters
+#     search = GridSearchCV(classifier, param_grid, cv=skf, scoring=scoring, n_jobs=-1, refit=True)
+
+#     # Initialize lists to store fold metrics
+#     f1_scores = []
+#     auc_scores = []
+#     hyperparam_combinations = []
+
+#     # Iterate through the StratifiedKFold splits
+#     for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X_train, y_train)):
+#         y_train_fold = y_train.iloc[train_idx].values
+
+#         # Calculate sample weights based on class distribution
+#         sample_weight = calculate_class_weight(y_train_fold, n_categories=len(np.unique(y_train)))
+
+#         # Fit the model on the current fold with sample weights
+#         search.fit(X_train.iloc[train_idx], y_train.iloc[train_idx], sample_weight=sample_weight)
+
+#         # Log best parameters for this fold
+#         best_params = search.best_params_
+#         logger.info(f"Best parameters for fold {fold_idx}: {best_params}")
+
+#         # Predict on the validation set
+#         y_pred = search.predict(X_train.iloc[val_idx])
+
+#         # Calculate F1 and AUC metrics
+#         f1 = f1_score(y_train.iloc[val_idx], y_pred, average='macro')
+#         auc = roc_auc_score(y_train.iloc[val_idx], y_pred, multi_class='ovo')
+
+#         f1_scores.append(f1)
+#         auc_scores.append(auc)
+#         hyperparam_combinations.append(fold_idx)
+
+#         logger.info(f"Metrics for fold {fold_idx}: F1={f1}, AUC={auc}")
+    
+#     # Create a DataFrame to store the metrics for each fold
+#     metrics_df = pd.DataFrame(
+#         {
+#             "fold": hyperparam_combinations,
+#             "f1_macro": f1_scores,
+#             "auc": auc_scores
+#         }
+#     )
+
+#     # Plot F1 and AUC scores across folds
+#     plt.figure(figsize=(12, 6))
+
+#     # F1 Score Boxplot
+#     plt.subplot(1, 2, 1)
+#     sns.boxplot(data=metrics_df, x="fold", y="f1_macro")
+#     plt.title('F1 Macro Score Distribution Across Folds')
+#     plt.ylabel('F1 Macro Score')
+
+#     # AUC Boxplot
+#     plt.subplot(1, 2, 2)
+#     sns.boxplot(data=metrics_df, x="fold", y="auc")
+#     plt.title('AUC Score Distribution Across Folds')
+#     plt.ylabel('AUC Score')
+
+#     plt.tight_layout()
+#     plt.show()
+
+#     # Return the best parameters and the metrics DataFrame
+#     return search.best_params_, metrics_df
 
 
 
@@ -869,6 +1027,66 @@ def evaluate_model(model, X_test, y_test):
     return mse, rmse, mae, r2, spear_r
 
 # classifier
+
+# Function to plot metrics distribution across trials
+def plot_cv_tuning(metrics_df):
+    plt.figure(figsize=(15, 5))
+
+    # F1 Macro Boxplot
+    plt.subplot(1, 3, 1)
+    sns.boxplot(x='fold', y='mean_f1_macro', data=metrics_df)
+    plt.title('F1 Macro Score Distribution Across Folds')
+    plt.ylabel('F1 Macro Score')
+    plt.xlabel('Fold Number')
+
+    # AUC Boxplot
+    plt.subplot(1, 3, 2)
+    sns.boxplot(x='fold', y='mean_auc', data=metrics_df)
+    plt.title('AUC Score Distribution Across Folds')
+    plt.ylabel('AUC Score')
+    plt.xlabel('Fold Number')
+
+    # Accuracy Boxplot
+    plt.subplot(1, 3, 3)
+    sns.boxplot(x='fold', y='mean_weighted_accuracy', data=metrics_df)
+    plt.title('Accuracy Score Distribution Across Folds')
+    plt.ylabel('Accuracy Score')
+    plt.xlabel('Fold Number')
+
+    plt.tight_layout()
+    plt.show()
+
+
+# Function to plot line plots for each hyperparameter
+def plot_hyperparams(metrics_df, param_grid):
+    # Convert hyperparams dictionary to multiple columns
+    hyperparams_df = metrics_df['hyperparams'].apply(pd.Series)
+    metrics_df = pd.concat([metrics_df.drop('hyperparams', axis=1), hyperparams_df], axis=1)
+
+    # Normalize the metrics to the same scale (0 to 1)
+    scaler = MinMaxScaler()
+    metrics_df[['mean_f1_macro', 'mean_auc', 'mean_weighted_accuracy']] = scaler.fit_transform(
+        metrics_df[['mean_f1_macro', 'mean_auc', 'mean_weighted_accuracy']]
+    )
+
+    plt.figure(figsize=(15, 10))
+
+    for i, param in enumerate(param_grid.keys(), 1):
+        print(f"looking at {param}")
+        plt.subplot(2, 3, i)
+        sns.lineplot(x=param, y='mean_f1_macro', data=metrics_df, label='F1 Macro', marker='o')
+        sns.lineplot(x=param, y='mean_auc', data=metrics_df, label='AUC', marker='o')
+        sns.lineplot(x=param, y='mean_weighted_accuracy', data=metrics_df, label='Weighted Accuracy', marker='o')
+        plt.title(f'Impact of {param} on Metrics')
+        plt.ylim(0,1)
+        plt.ylabel('Normalised Metric Value')
+        plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+
 def evaluate_classifier(model, X_test, y_test):
     """
     Evaluate the performance of the classifier using the test set
@@ -891,17 +1109,18 @@ def plot_results(y_test, y_pred, title, target):
     """
     Plot the observed vs predicted expression values for the test set
     """
-    biomodal_palette = ["#003B49", "#9CDBD9", "#F87C56", "#C0DF16", "#05868E"]
-    plt.plot(y_test, y_pred, ".", ms=4, c=biomodal_palette[0])
+    plt.plot(y_test, y_pred, ".", ms=4, c=biomodal_palette[0], alpha=0.3)
     # add x=y line
-    plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], "--", color=biomodal_palette[2])
+    plt.plot([min(y_test[y_test>-10]), max(y_test)], [min(y_test>-10), max(y_test)], "--", color=biomodal_palette[2])
     plt.xlabel(f"Observed Expr. {target}")
     plt.ylabel(f"Predicted Expr. {target}")
     plt.title(title)
     plt.xlim(min(y_test)-2, max(y_test)+2)
     plt.ylim(min(y_pred)-2, max(y_pred)+2)
     plt.grid(True)
+    plt.tight_layout()
     plt.show()
+
 
 ######## END OF EVALUTATION ########
 
@@ -916,7 +1135,7 @@ def evaluate_feat_imp(best_model, features, modifications):
         }
     
     )
-    print(df_features_importance.sort_values("importance", ascending=False).head(10))
+    logger.info(df_features_importance.sort_values("importance", ascending=False).head(10))
 
     fig, ax = plt.subplots(figsize=(14, 6))
     sns.barplot(
@@ -941,8 +1160,9 @@ def build_regression_model(X_train, X_test, y_train, y_test, target, default_hyp
         find_optimal_parameters=find_optimal_parameters,
         param_grid=param_grid
     )  
+    
+    logger.info(f"Regressor performance: {df_metrics}")
 
-    print(df_metrics)
     plot_results(
         y_test, 
         y_pred, 
@@ -950,43 +1170,34 @@ def build_regression_model(X_train, X_test, y_train, y_test, target, default_hyp
         target
     )
 
+def rpkm_loader(rna_data, df_features, transcripts):
+    selected_transcripts = transcripts.groupby('gene_id').apply(
+        select_transcript_based_on_tag
+    ).reset_index(drop=True)
+    print(f"transcript downloaded, selected transcripts: {selected_transcripts}")
 
-# def build_classification_model(X_train, X_test, y_train, y_test, default_hyperparameters, n_cat, find_optimal_parameters=False, param_grid=None):
-#     # create n categories based on the response values
-#     labels = [k for k in range(n_cat)]
-#     # df_features_expression["category"] = pd.cut(
-#     #     df_features_expression["Response"], bins=n, labels=labels
-#     # )
-#     print(labels)
-#     y_train_binned, binedges = pd.cut(
-#         y_train, bins=n_cat, labels=labels, retbins=True
-#     )
-#     print(y_train_binned.value_counts(), binedges)
-#     y_test_binned, binedges = pd.cut(
-#         y_test, bins=n_cat, labels=labels,retbins=True
-#     )
-def build_classification_model(X_train, X_test, y_train_binned, y_test_binned, default_hyperparameters, n_cat, find_optimal_parameters=False, param_grid=None):
+    df_expression = load_rna_expression_rpm(rna_data, selected_transcripts, transcripts, "rpkm")
+    print(f"rpm expression data loaded: {df_expression.shape}")
+    print(f"null counts:{df_expression.isnull().sum()}")
+
+    df_features_expression = pd.merge(
+        df_features,
+        df_expression,
+        on=["Chromosome", "Start", "End"],
+        how="inner",
+    )
     
-    # run the classifier
-    c, df_metrics = run_classifier(
-        X_train, X_test, y_train_binned, y_test_binned,
-        hyperparameters=default_hyperparameters,
-        find_optimal_parameters=find_optimal_parameters,
-        random_state=1,
-        param_grid=param_grid
-        )
-    print(f"for {n_cat} categories, acc metrics:")
-    print(df_metrics)
-    return c, df_metrics
-
+    return df_features_expression
 
 
 ######## END oF UTILITY FUNCTIONS ########
 
-def run_main(input, rna_data,modifications, target, expressed_only):
+
+
+def run_main(input, rna_data,modifications, target, expressed_only=False, grid_search=False):
     # feature output from extract_feature.ipynb
     df_features = pd.read_pickle(input)
-    print(f"{input} features loaded")
+    logger.info(f"{input} features loaded")
 
     # Get transcripts for mm10
     print("loading gene annotation mm10")
@@ -1001,31 +1212,15 @@ def run_main(input, rna_data,modifications, target, expressed_only):
     # expression data
     if target == "TPM":
         zscore_threshold = 0.8
-        multimodal = True
         df_features_expression = load_rna_expression_tpm(rna_data, df_features, transcripts, expressed_only)
         print("TPM expression data loaded")
     elif target == "rpkm":
-        selected_transcripts = transcripts.groupby('gene_id').apply(
-            select_transcript_based_on_tag
-        ).reset_index(drop=True)
-        print(f"transcript downloaded, selected transcripts: {selected_transcripts}")
-   
         zscore_threshold = 1
-        multimodal = False
-        df_expression = load_rna_expression_rpm(rna_data, selected_transcripts, transcripts, target)
-        print(f"rpm expression data loaded: {df_expression.shape}")
-        print(f"null counts:{df_expression.isnull().sum()}")
-
-        df_features_expression = pd.merge(
-            df_features,
-            df_expression,
-            on=["Chromosome", "Start", "End"],
-            how="inner",
-        )
-    
+        df_features_expression = rpkm_loader(rna_data, df_features, transcripts)
+        
     # print(f"features and target merged: {df_features_expression}")
-    print(f"shape: {df_features_expression.shape}")
-    print('='*200)
+    logger.info(f"shape: {df_features_expression.shape}")
+    logger.info('='*200)
     
     
     # preprocessing:
@@ -1034,13 +1229,13 @@ def run_main(input, rna_data,modifications, target, expressed_only):
     df_features_expression_clean = df_features_expression.dropna(axis=1, how='all')
     # frop contig column
     df_features_expression_clean = df_features_expression_clean.drop('contig', axis=1)
-    print(f"Nan features(columns) dropped: {orig_feature_shape[1]} --> {df_features_expression_clean.shape[1]}")
+    logger.info(f"Nan features(columns) dropped: {orig_feature_shape[1]} --> {df_features_expression_clean.shape[1]}")
 
-    print(f"selected target unit: {target}")
-    print("PREPROCESSING...")
+    logger.info(f"selected target unit: {target}")
+    logger.info("PREPROCESSING...")
 
     
-    print(f"removing rows with {target} zscore > {zscore_threshold} - target outliers")
+    logger.info(f"removing rows with {target} zscore > {zscore_threshold} - target outliers")
     df_clean = remove_target_outliers(df_features_expression_clean, target, zscore_threshold)
     plot_target_kde(df_clean,target)
     # Label Encode strand: '+' -> 0 ; '-' -> 1
@@ -1058,33 +1253,66 @@ def run_main(input, rna_data,modifications, target, expressed_only):
         or c.startswith("range")
         or c.startswith("strand"))
     ]
-    print(f"Training with {len(features)} features...")
+    logger.info(f"Training with {len(features)} features...")
 
     default_hyperparameters = {
-        "mh":{
-            'n_estimators': 600, 
-            'colsample_bytree': 0.8, 
-            'eta': 0.01, 
-            'max_depth': 5, 
-            'min_child_weight': 10, 
-            'subsample': 0.8
-        },
-        "mod":{
-            'n_estimators': 600,
+        # "mh":{#jean's
+        #     'n_estimators': 600, 
+        #     'colsample_bytree': 0.8, 
+        #     'eta': 0.01, 
+        #     'max_depth': 5, 
+        #     'min_child_weight': 10, 
+        #     'subsample': 0.8
+        # },
+        # "mh":{ #same as mod
+        #     'colsample_bytree': 0.7, 
+        #     'eta': 0.02, 
+        #     'max_depth': 8, 
+        #     'min_child_weight': 1, 
+        #     'n_estimators': 500, 
+        #     'subsample': 0.7
+        # },
+        # "mod":{ #bisulfite
+        #     'colsample_bytree': 0.8, 
+        #     'eta': 0.02, 
+        #     'max_depth': 7, 
+        #     'min_child_weight': 1, 
+        #     'n_estimators': 600, 
+        #     'subsample': 0.6
+        # },
+
+        "mh":{ #result from GS
             'colsample_bytree': 0.75, 
             'eta': 0.02, 
             'max_depth': 7, 
-            'min_child_weight': 10, 
-            'subsample': 0.7
+            'min_child_weight': 1, 
+            'n_estimators': 500, 
+            'subsample': 0.6
             },
-        "m":{
-            'n_estimators': 600,
-            'colsample_bytree': 0.75, 
+        "mod":{ #evoc
+            'colsample_bytree': 0.7, 
             'eta': 0.02, 
-            'max_depth': 7, 
-            'min_child_weight': 10, 
-            'subsample': 0.7}
-        }
+            'max_depth': 8, 
+            'min_child_weight': 1, 
+            'n_estimators': 500, 
+            'subsample': 0.7
+        },
+        "m":{
+            'colsample_bytree': 0.7, 
+            'eta': 0.02, 
+            'max_depth': 8, 
+            'min_child_weight': 1, 
+            'n_estimators': 500, 
+            'subsample': 0.8
+            },
+        "h":{'colsample_bytree': 0.7, 
+             'eta': 0.01, 
+             'max_depth': 8, 
+             'min_child_weight': 1, 
+             'n_estimators': 500, 
+             'subsample': 0.8
+             }
+    }
 
     # Building a regressor:
 
@@ -1095,7 +1323,6 @@ def run_main(input, rna_data,modifications, target, expressed_only):
     mod = modifications,
     target=target,
     missing_values_strategy="mean",
-    multimodal = multimodal,
     classifier = False
     )
     print('='*200)
@@ -1111,25 +1338,30 @@ def run_main(input, rna_data,modifications, target, expressed_only):
             "colsample_bytree": [0.8, 0.9],#[0.75, 0.8, 0.85, 0.9],
             "eta": [0.01, 0.02, 0.03]#[0.01, 0.02, 0.03, 0.04, 0.05],
         }
+        
         print("grid serching (Regression)")
     else:
         param_grid = None
-        mod = ''
+        mod = "empty"
+        if modifications is None:
+            pass
         if "modc" in modifications:
             mod = "mod"
         elif "mc" in modifications and "hmc" in modifications:
             mod = "mh"
         elif "mc" in modifications and "hmc" not in modifications:
             mod = "m"
+        elif "hmc" in modifications and "mc" not in modifications:
+            mod = "h"
         print(f"training with {default_hyperparameters[mod]}")
 
     build_regression_model(X_train, X_test, y_train, y_test, target, default_hyperparameters[mod], regression_gridsearch, param_grid) #skip gridsearch for now
     
     
-    print('='*200)
+    logger.info('='*200)
 
     # Build a classifier:
-    classifier_gridsearch = False
+    classifier_gridsearch = grid_search
     
     if classifier_gridsearch:
         number_of_categories = [2]
@@ -1147,11 +1379,10 @@ def run_main(input, rna_data,modifications, target, expressed_only):
         mod = modifications,
         target=target,
         missing_values_strategy="mean",
-        multimodal = multimodal,
         classifier = True,
         n_cat=n
         )
-        
+        gs_metrics = None
         if classifier_gridsearch:
             param_grid = {
             "max_depth": [6, 7, 8],
@@ -1162,38 +1393,427 @@ def run_main(input, rna_data,modifications, target, expressed_only):
             "eta": [0.01, 0.02, 0.03],
             }
             print(f"training {n} category model with grid serching (classification)")
+
+            # run the classifier
+            classifier, df_metrics, gs_metrics = run_classifier(
+                X_train, X_test, y_train, y_test,
+                hyperparameters=dict(),
+                find_optimal_parameters=True,
+                random_state=1,
+                param_grid=param_grid
+                )
+
         else:
-            param_grid = None
-            mod = ''
+            mod = 'empty'
             if "modc" in modifications:
                 mod = "mod"
             elif "mc" in modifications and "hmc" in modifications:
                 mod = "mh"
             elif "mc" in modifications and "hmc" not in modifications:
                 mod = "m"
+            elif "hmc" in modifications and "mc" not in modifications:
+                mod = "h"
             print(f"training {n} category model with {default_hyperparameters[mod]}")
-        
-        classifier, df_metrics = build_classification_model(X_train, X_test, y_train, y_test, default_hyperparameters[mod], n, classifier_gridsearch, param_grid)
-        
+
+            # run the classifier
+            classifier, df_metrics, _ = run_classifier(
+                X_train, X_test, y_train, y_test,
+                hyperparameters=default_hyperparameters[mod],
+                find_optimal_parameters=False,
+                random_state=1,
+                param_grid=None
+                )
+        logger.info(f"for {n} categories, test eval metrics: {df_metrics}")
+            
         # Store the classifiers and metric for later use
         classifiers[n] = classifier
         classifier_res = pd.concat([classifier_res, df_metrics], ignore_index=True)
 
     # Print all results
-    print("classifier results:")
-    print(classifier_res)
-    print('='*200)
+    logger.info("classifier results: \n {classifier_res}")
+    logger.info('='*200)
 
     # Find the best-performing model (e.g., based on accuracy)
     best_model_id = classifier_res.loc[classifier_res["auc"].idxmax()]["number_of_categories"]
     best_model = classifiers[best_model_id]
 
-    print(f"Best performing classifier: {best_model_id} categories")
+    logger.info(f"Best performing classifier: {best_model_id} categories")
 
 
     # Feature Importance:
     evaluate_feat_imp(best_model, features, modifications)
 
+    return classifier_res, gs_metrics
 
 
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
+def get_roc(input_mod_map, rna_data, target, expressed_only=False):
+    """
+    input_mod_map: list of tuples, each containing (input_data_path, modification_list, experiment_name)
+    """
+    # Define the updated palette
+    updated_biomodal_palette = ["#808080", "#003B49", "#9CDBD9", "#F87C56", "#C0DF16", "#05868E"]
 
+    plt.figure(figsize=(10, 8))  # Initialise the ROC curve plot before the loop
+    
+    for input_data, modifications, exp_name in input_mod_map:
+        # Load features
+        df_features = pd.read_pickle(input_data)
+        logger.info(f"{input_data} features loaded")
+        
+        # Get transcripts for mm10
+        print("loading gene annotation mm10")
+        transcripts = get_transcripts(reference="mm10", contig=None, start=None, end=None, as_pyranges=False)
+
+        # Load expression data
+        if target == "TPM":
+            zscore_threshold = 0.8
+            df_features_expression = load_rna_expression_tpm(rna_data, df_features, transcripts, expressed_only)
+            print("TPM expression data loaded")
+        elif target == "rpkm":
+            zscore_threshold = 1
+            df_features_expression = rpkm_loader(rna_data, df_features, transcripts)
+        
+        # Preprocessing
+        df_features_expression_clean = df_features_expression.dropna(axis=1, how='all')
+        df_features_expression_clean = df_features_expression_clean.drop('contig', axis=1)
+        df_clean = remove_target_outliers(df_features_expression_clean, target, zscore_threshold)
+        df_clean['strand'] = LabelEncoder().fit_transform(df_clean['strand'])
+        
+        df_clean = df_clean.drop(['range_length_before_tss_sense', 'range_length_after_tes_sense'], axis=1)
+
+
+        # Default hyperparameters
+        default_hyperparameters = {
+            "modb": {'colsample_bytree': 0.8, 'eta': 0.02, 'max_depth': 7, 'min_child_weight': 1, 'n_estimators': 600, 'subsample': 0.6},
+            "mh": {'colsample_bytree': 0.75, 'eta': 0.02, 'max_depth': 7, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.6},
+            "mod": {'colsample_bytree': 0.7, 'eta': 0.02, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.7},
+            "m": {'colsample_bytree': 0.7, 'eta': 0.02, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8},
+            "h": {'colsample_bytree': 0.7, 'eta': 0.01, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8},
+            "empty": {'colsample_bytree': 0.7, 'eta': 0.01, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8}
+            
+        }
+
+        # Iterate through modifications
+        for i, mods in enumerate(modifications):
+            if exp_name != "Baseline":
+                exp_name = f"Experiment {i + 1}" if mods != None else "Extended Experiment"  # Assign name
+                updated_biomodal_palette = biomodal_palette
+            print(f"running {exp_name}...")
+            
+            mod = "empty"
+            if mods is None:
+                pass
+            elif "modc" in mods:
+                if exp_name == "Baseline":
+                    mod = "modb"
+                else:
+                    mod = "mod"
+            elif "mc" in mods and "hmc" in mods:
+                mod = "mh"
+            elif "mc" in mods and "hmc" not in mods:
+                mod = "m"
+            elif "hmc" in mods and "mc" not in mods:
+                mod = "h"
+
+            # Check if mod is valid
+            if mod not in default_hyperparameters:
+                print(f"Skipping invalid modification mapping: {mods}")
+                continue
+
+            features = [
+                c for c in df_clean.columns if (
+                    c.startswith("mean") or
+                    c.startswith("cpg_count") or
+                    c.startswith("range") or
+                    c.startswith("strand")
+                )
+            ]
+            X_train, X_test, y_train, y_test = preprocess(
+                data=df_clean,
+                features=features,
+                mod=mods,
+                target=target,
+                missing_values_strategy="mean",
+                classifier=True,
+                n_cat=2
+            )
+
+            # Run classifier with default hyperparameters
+            classifier, df_metrics, _ = run_classifier(
+                X_train, X_test, y_train, y_test,
+                hyperparameters=default_hyperparameters[mod],
+                find_optimal_parameters=False,
+                random_state=1,
+                param_grid=None
+            )
+
+            # Plot ROC curve for the current model
+            y_test_proba = classifier.predict_proba(X_test)[:, 1]
+            fpr, tpr, _ = roc_curve(y_test, y_test_proba)
+            roc_auc = auc(fpr, tpr)
+            plt.plot(fpr, tpr, label=f"{exp_name} (AUC = {roc_auc:.3f})", color=updated_biomodal_palette[i % len(updated_biomodal_palette)])
+
+
+    # Finalize and show the plot
+    plt.plot([0, 1], [0, 1], color='#F87C56', linestyle='--', alpha=0.8)
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curve - Binary Classifications for Different Modifications')
+    plt.legend(loc="lower right")
+    plt.show()
+    return
+
+# def get_importance(input_mod_map, rna_data, target, expressed_only=False):
+#     """
+#     input_mod_map: list of tuples, each containing (input_data_path, modification_list, experiment_name)
+#     """
+#     # Define the updated palette
+#     updated_biomodal_palette = ["#808080", "#003B49", "#9CDBD9", "#F87C56", "#C0DF16", "#05868E"]
+
+#     fig, axes = plt.subplots(2, 3, figsize=(15, 10))  # Initialise 6 subplots for feature importance
+#     axes = axes.ravel()  # Flatten axes array for easy access
+
+#     for input_data, modifications, exp_name in input_mod_map:
+#         # Load features
+#         df_features = pd.read_pickle(input_data)
+#         logger.info(f"{input_data} features loaded")
+        
+#         # Get transcripts for mm10
+#         print("loading gene annotation mm10")
+#         transcripts = get_transcripts(reference="mm10", contig=None, start=None, end=None, as_pyranges=False)
+
+#         # Load expression data
+#         if target == "TPM":
+#             zscore_threshold = 0.8
+#             df_features_expression = load_rna_expression_tpm(rna_data, df_features, transcripts, expressed_only)
+#             print("TPM expression data loaded")
+#         elif target == "rpkm":
+#             zscore_threshold = 1
+#             df_features_expression = rpkm_loader(rna_data, df_features, transcripts)
+        
+#         # Preprocessing
+#         df_features_expression_clean = df_features_expression.dropna(axis=1, how='all')
+#         df_features_expression_clean = df_features_expression_clean.drop('contig', axis=1)
+#         df_clean = remove_target_outliers(df_features_expression_clean, target, zscore_threshold)
+#         df_clean['strand'] = LabelEncoder().fit_transform(df_clean['strand'])
+        
+#         df_clean = df_clean.drop(['range_length_before_tss_sense', 'range_length_after_tes_sense'], axis=1)
+
+
+#         # Default hyperparameters
+#         default_hyperparameters = {
+#             "modb": {'colsample_bytree': 0.8, 'eta': 0.02, 'max_depth': 7, 'min_child_weight': 1, 'n_estimators': 600, 'subsample': 0.6},
+#             "mh": {'colsample_bytree': 0.75, 'eta': 0.02, 'max_depth': 7, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.6},
+#             "mod": {'colsample_bytree': 0.7, 'eta': 0.02, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.7},
+#             "m": {'colsample_bytree': 0.7, 'eta': 0.02, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8},
+#             "h": {'colsample_bytree': 0.7, 'eta': 0.01, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8},
+#             "empty": {'colsample_bytree': 0.7, 'eta': 0.01, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8}
+#         }
+
+#         # Iterate through modifications
+#         for i, mods in enumerate(modifications):
+#             if exp_name != "Baseline":
+#                 exp_name = f"Experiment {i + 1}" if mods != None else "Extended Experiment"  # Assign name
+#                 updated_biomodal_palette = biomodal_palette
+#             print(f"running {exp_name}...")
+            
+#             mod = "empty"
+#             if mods is None:
+#                 pass
+#             elif "modc" in mods:
+#                 if exp_name == "Baseline":
+#                     mod = "modb"
+#                 else:
+#                     mod = "mod"
+#             elif "mc" in mods and "hmc" in mods:
+#                 mod = "mh"
+#             elif "mc" in mods and "hmc" not in mods:
+#                 mod = "m"
+#             elif "hmc" in mods and "mc" not in mods:
+#                 mod = "h"
+
+#             # Check if mod is valid
+#             if mod not in default_hyperparameters:
+#                 print(f"Skipping invalid modification mapping: {mods}")
+#                 continue
+
+#             features = [
+#                 c for c in df_clean.columns if (
+#                     c.startswith("mean") or
+#                     c.startswith("cpg_count") or
+#                     c.startswith("range") or
+#                     c.startswith("strand")
+#                 )
+#             ]
+#             X_train, X_test, y_train, y_test = preprocess(
+#                 data=df_clean,
+#                 features=features,
+#                 mod=mods,
+#                 target=target,
+#                 missing_values_strategy="mean",
+#                 classifier=True,
+#                 n_cat=2
+#             )
+
+#             # Run classifier with default hyperparameters
+#             classifier, df_metrics, _ = run_classifier(
+#                 X_train, X_test, y_train, y_test,
+#                 hyperparameters=default_hyperparameters[mod],
+#                 find_optimal_parameters=False,
+#                 random_state=1,
+#                 param_grid=None
+#             )
+
+#             # Plot feature importance for the current model
+#             importance = classifier.feature_importances_
+#             sorted_idx = np.argsort(importance)[-20:]
+#             top_features = [features[i] for i in sorted_idx]
+#             top_importance = importance[sorted_idx]
+
+#             ax = axes[i]  # Get the current subplot
+#             ax.barh(top_features, top_importance, color=updated_biomodal_palette[i % len(updated_biomodal_palette)])
+#             ax.set_yticks(range(len(top_features)))
+#             ax.set_yticklabels(top_features)
+#             ax.set_title(f"{exp_name} - Top 20 Feature Importance")
+#             if exp_name == "Baseline":
+#                 plt.tight_layout
+#                 plt.show()
+
+#     # Finalize and show the plot
+#     plt.tight_layout()
+#     plt.show()
+
+#     return
+
+
+def get_importance(input_mod_map, rna_data, target, expressed_only=False):
+    """
+    input_mod_map: list of tuples, each containing (input_data_path, modification_list, experiment_name)
+    """
+    # Define the updated palette
+    updated_biomodal_palette = ["#808080", "#003B49", "#9CDBD9", "#F87C56", "#C0DF16", "#05868E"]
+
+    # Initialise the subplots figure
+    fig, axes = plt.subplots(3, 2, figsize=(30, 24.5))  # 3 rows, 2 columns
+    axes = axes.flatten()  # Flatten the axes array for easy iteration
+    
+    subplot_idx = 0
+
+    for input_data, modifications, exp_name in input_mod_map:
+        # Load features
+        df_features = pd.read_pickle(input_data)
+        logger.info(f"{input_data} features loaded")
+        
+        # Get transcripts for mm10
+        print("loading gene annotation mm10")
+        transcripts = get_transcripts(reference="mm10", contig=None, start=None, end=None, as_pyranges=False)
+
+        # Load expression data
+        if target == "TPM":
+            zscore_threshold = 0.8
+            df_features_expression = load_rna_expression_tpm(rna_data, df_features, transcripts, expressed_only)
+            print("TPM expression data loaded")
+        elif target == "rpkm":
+            zscore_threshold = 1
+            df_features_expression = rpkm_loader(rna_data, df_features, transcripts)
+        
+        # Preprocessing
+        df_features_expression_clean = df_features_expression.dropna(axis=1, how='all')
+        df_features_expression_clean = df_features_expression_clean.drop('contig', axis=1)
+        df_clean = remove_target_outliers(df_features_expression_clean, target, zscore_threshold)
+        df_clean['strand'] = LabelEncoder().fit_transform(df_clean['strand'])
+        
+        df_clean = df_clean.drop(['range_length_before_tss_sense', 'range_length_after_tes_sense'], axis=1)
+
+        # Default hyperparameters
+        default_hyperparameters = {
+            "modb": {'colsample_bytree': 0.8, 'eta': 0.02, 'max_depth': 7, 'min_child_weight': 1, 'n_estimators': 600, 'subsample': 0.6},
+            "mh": {'colsample_bytree': 0.75, 'eta': 0.02, 'max_depth': 7, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.6},
+            "mod": {'colsample_bytree': 0.7, 'eta': 0.02, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.7},
+            "m": {'colsample_bytree': 0.7, 'eta': 0.02, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8},
+            "h": {'colsample_bytree': 0.7, 'eta': 0.01, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8},
+            "empty": {'colsample_bytree': 0.7, 'eta': 0.01, 'max_depth': 8, 'min_child_weight': 1, 'n_estimators': 500, 'subsample': 0.8}
+        }
+
+        # Iterate through modifications
+        for i, mods in enumerate(modifications):
+            if exp_name != "Baseline":
+                exp_name = f"Experiment {i + 1}" if mods != None else "Extended Experiment"  # Assign name
+                # updated_biomodal_palette = biomodal_palette
+            print(f"running {exp_name}...")
+
+            mod = "empty"
+            if mods is None:
+                pass
+            elif "modc" in mods:
+                if exp_name == "Baseline":
+                    mod = "modb"
+                else:
+                    mod = "mod"
+            elif "mc" in mods and "hmc" in mods:
+                mod = "mh"
+            elif "mc" in mods and "hmc" not in mods:
+                mod = "m"
+            elif "hmc" in mods and "mc" not in mods:
+                mod = "h"
+
+            # Check if mod is valid
+            if mod not in default_hyperparameters:
+                print(f"Skipping invalid modification mapping: {mods}")
+                continue
+
+            features = [
+                c for c in df_clean.columns if (
+                    c.startswith("mean") or
+                    c.startswith("cpg_count") or
+                    c.startswith("range") or
+                    c.startswith("strand")
+                )
+            ]
+            X_train, X_test, y_train, y_test = preprocess(
+                data=df_clean,
+                features=features,
+                mod=mods,
+                target=target,
+                missing_values_strategy="mean",
+                classifier=True,
+                n_cat=2
+            )
+
+            # Run classifier with default hyperparameters
+            classifier, df_metrics, _ = run_classifier(
+                X_train, X_test, y_train, y_test,
+                hyperparameters=default_hyperparameters[mod],
+                find_optimal_parameters=False,
+                random_state=1,
+                param_grid=None
+            )
+
+            used_features = list(X_train.columns)
+
+            # Plot feature importance for the current model
+            feature_importance = classifier.feature_importances_
+            sorted_idx = np.argsort(feature_importance)[-10:]  # Get the top 20 features
+            top_features = [used_features[i] for i in sorted_idx]
+            top_importance = feature_importance[sorted_idx]
+            
+            # Plot the top 20 features
+            ax = axes[subplot_idx]
+            ax.barh(top_features, top_importance, color=updated_biomodal_palette[subplot_idx % len(updated_biomodal_palette)])
+            ax.set_title(f"{exp_name} - Top 10 Features", fontsize=30)
+            ax.tick_params(axis='y', labelsize=26)
+            ax.set_xlabel('Importance', fontsize=26)
+            subplot_idx += 1
+
+            if subplot_idx >= len(axes):  # If more than 6 plots, stop
+                break
+
+    # Only show the entire figure with all subplots at the end
+    plt.tight_layout()
+    plt.show()
+
+    return
